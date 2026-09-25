@@ -1,0 +1,15 @@
+# AWS credentials — never commit these
+.aws/
+*.pem
+*credentials*
+
+# Generated config with real DB credentials — never commit
+app/config.php
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/

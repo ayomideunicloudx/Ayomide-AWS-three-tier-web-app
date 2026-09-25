@@ -1,0 +1,48 @@
+// ── 1. TRUST POLICY (attach when creating the role) ────────────────────────
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ec2.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+
+// ── 2. PERMISSIONS POLICY (custom, attach alongside the AWS-managed
+//    AmazonSSMManagedInstanceCore policy — that one enables Session Manager) ─
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowReadOnlyOneSpecificSecret",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:YOUR_REGION:YOUR_ACCOUNT_ID:secret:YOUR_RDS_SECRET_NAME-*"
+    },
+    {
+      "Sid": "AllowCloudWatchLogsForThisApp",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:YOUR_REGION:YOUR_ACCOUNT_ID:log-group:/three-tier-app/*"
+    }
+  ]
+}
+
+// Notes:
+// - The AmazonSSMManagedInstanceCore AWS-managed policy is what enables
+//   Session Manager access — attach it directly to the role in the IAM
+//   console rather than copying it here (it's maintained by AWS).
+// - The secret ARN uses a "-*" suffix because Secrets Manager appends a
+//   random 6-character suffix to every secret's ARN — this matches it
+//   without hardcoding the random part.
+// - This role has NO other permissions: no S3, no EC2 control-plane
+//   actions, nothing beyond reading its own one secret and writing its
+//   own logs.

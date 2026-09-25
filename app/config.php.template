@@ -1,0 +1,14 @@
+<?php
+// config.php.template
+//
+// This file is NOT deployed as-is. scripts/user-data.sh fetches the real
+// credentials from AWS Secrets Manager at instance boot time and writes
+// an actual config.php with these values filled in — nothing here is
+// ever hardcoded with a real password, and this template file itself
+// contains no secrets.
+
+define('DB_HOST', '__DB_HOST__');   // RDS endpoint, from the Secrets Manager secret
+define('DB_PORT', '__DB_PORT__');   // usually 3306 for MySQL
+define('DB_NAME', '__DB_NAME__');   // database name
+define('DB_USER', '__DB_USER__');   // master username, from the secret
+define('DB_PASS', '__DB_PASS__');   // master password, from the secret — never committed to git
