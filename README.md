@@ -32,9 +32,11 @@ Every arrow above is a security group reference, not an open CIDR range ; each t
 Services used
 ### Service	Role
 VPC	Custom VPC across 2 AZs, with public, private app-tier, and private data-tier subnets
-![VPC
+![VPC](SS-3-TIER/VPC.png)
 
 NAT Gateway	Single zonal NAT Gateway: gives the app tier outbound internet access (updates, SSM endpoints) without being reachable from it
+![NAT](SS-3-TIER/natgateway.png)
+
 Application Load Balancer	Public-facing entry point, routes only to healthy targets
 EC2 Auto Scaling Group	Runs the app tier in private subnets across both AZs, db.t3.micro/t2.micro-class, no public IPs
 AWS Systems Manager (Session Manager)	Instance access with no open SSH port — access is IAM-controlled and logged in CloudTrail
