@@ -30,8 +30,10 @@ Architecture
                     └─────────────────┘
 Every arrow above is a security group reference, not an open CIDR range ; each tier can only be reached by the tier directly in front of it.
 Services used
-Service	Role
+### Service	Role
 VPC	Custom VPC across 2 AZs, with public, private app-tier, and private data-tier subnets
+![VPC
+
 NAT Gateway	Single zonal NAT Gateway: gives the app tier outbound internet access (updates, SSM endpoints) without being reachable from it
 Application Load Balancer	Public-facing entry point, routes only to healthy targets
 EC2 Auto Scaling Group	Runs the app tier in private subnets across both AZs, db.t3.micro/t2.micro-class, no public IPs
