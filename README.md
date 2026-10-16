@@ -1,131 +1,73 @@
-# AWS Three-Tier Web App (ALB + EC2 Auto Scaling + RDS Multi-AZ)
+AWS Three-Tier Web Application
+A production style three-tier-web-architecture built on AWS, designed for high availability and strict network isolation: no single point of failure, and no direct internet exposure for the application or database layers.
+Live test endpoint (via ALB): Threetierwebappalb-1043685500.us-east-1.elb.amazonaws.com
+Architecture
+                         Internet
+                             │
+                    ┌────────▼────────┐
+                    │   alb-sg (80)   │   0.0.0.0/0 → 80/443
+                    └────────┬────────┘
+                    ┌────────▼────────┐
+                    │  Application    │   Public subnets
+                    │  Load Balancer  │   (us-east-1a / 1b)
+                    └────────┬────────┘
+                    ┌────────▼────────┐
+                    │   app-sg (80)   │   from alb-sg only
+                    └────────┬────────┘
+                    ┌────────▼────────┐
+                    │  EC2 Auto       │   Private app-tier subnets
+                    │  Scaling Group  │   (us-east-1a / 1b)
+                    │  SSM only,      │   No public IP, no SSH
+                    │  no SSH         │
+                    └────────┬────────┘
+                    ┌────────▼────────┐
+                    │   rds-sg (3306) │   from app-sg only
+                    └────────┬────────┘
+                    ┌────────▼────────┐
+                    │  RDS MySQL      │   Private data-tier subnets
+                    │  Multi-AZ       │   (us-east-1a primary /
+                    │                 │    us-east-1b standby)
+                    └─────────────────┘
+Every arrow above is a security group reference, not an open CIDR range ; each tier can only be reached by the tier directly in front of it.
+Services used
+Service	Role
+VPC	Custom VPC across 2 AZs, with public, private app-tier, and private data-tier subnets
+NAT Gateway	Single zonal NAT Gateway: gives the app tier outbound internet access (updates, SSM endpoints) without being reachable from it
+Application Load Balancer	Public-facing entry point, routes only to healthy targets
+EC2 Auto Scaling Group	Runs the app tier in private subnets across both AZs, db.t3.micro/t2.micro-class, no public IPs
+AWS Systems Manager (Session Manager)	Instance access with no open SSH port — access is IAM-controlled and logged in CloudTrail
+RDS MySQL (Multi-AZ)	db.t3.micro, primary in us-east-1a with a standby in us-east-1b, fully isolated in the data tier
+Secrets Manager	Stores RDS credentials — nothing hardcoded, nothing in source control
+Security Groups	Three groups (alb-sg → app-sg → rds-sg), each referencing the one before it
+AWS Budgets	Cost alarm at $20/month with 50% and 80% thresholds, set up before provisioning anything
+Design decisions
+No SSH anywhere. Every instance is accessed via SSM Session Manager — no open port 22, no key pairs to manage or leak, every session logged in CloudTrail.
+Security groups reference each other, never open CIDRs, for anything internal. Only alb-sg accepts traffic from 0.0.0.0/0, and only on 80/443.
+The data tier has no internet route at all — not even via NAT. RDS doesn't need outbound internet access, so its route table only has the local VPC route.
+Secrets, not hardcoded credentials. The app tier's IAM role reads the DB password from Secrets Manager at runtime.
+Single NAT Gateway, not one per AZ, to control cost on a portfolio project — documented below as a known production trade-off.
+Known trade-offs (what I'd change for real production)
+Single NAT Gateway — cheaper, but it's a single point of failure for outbound internet access from the app tier. A production setup would use one NAT Gateway per AZ.
+SecretsManagerReadWrite on the EC2 role — broader than needed; it can read/write any secret in the account. Production should scope this to a single secret ARN via an inline policy.
+No auto-scaling policies configured yet — the ASG currently runs a fixed desired capacity (2) rather than scaling on CPU/request count. Target tracking scaling policies are a natural next step.
+Troubleshooting log
+Real issues hit and fixed during the build, kept here because the fixes taught me more about how VPC networking, security groups, and RDS actually interact than a straight build without bug would have.
+Networking
+The VPC console's "VPC and more" wizard only supports 2 subnet tiers (public + private) — it can't build a dedicated data tier. Built public + app-tier subnets via the wizard, then manually added the 2 data-tier subnets afterward.
+The wizard's subnet CIDRs weren't sequential /24s as expected — it assigned non-sequential /20 blocks. Had to check the actual allocated ranges before picking free space for the manually-added data subnets.
+A subnet's name and its actual Availability Zone can silently mismatch. A subnet named ...-us-east-1b was physically created in us-east-1a because the AZ dropdown wasn't double-checked at creation time. This wasn't caught until DB subnet group creation failed with an AZ-coverage error — had to delete and recreate the subnet with the AZ explicitly verified.
+The data-tier route table intentionally has no 0.0.0.0/0 route at all (not even via NAT) — RDS doesn't need outbound internet access, so this is more secure than reusing the app-tier's NAT-routed table.
+RDS
+AWS resource names can't start with a digit ; a DB subnet group name starting with 3 was rejected; renamed to start with a letter.
+The RDS "Production" template only offered m5/r5-family instances for Multi-AZ by default (estimated $254/month) — the smaller t3/t4g burstable classes were hidden behind a "Show filters" toggle on the instance class picker, defaulting to "Standard classes." Switching the filter to "Burstable classes" revealed db.t3.micro, dropping the estimate to $29/month.
+"Public access" defaults to Yes in the RDS creation wizard — caught and changed to No before launch, since leaving it on would have given the database a public IP and defeated the entire point of the private data tier.
+DB subnet group creation was missed during the initial build pass and only discovered at RDS launch time, when the subnet group dropdown had nothing to select.
+Load balancer / Auto Scaling
+Ended up with two separate ALBs + target groups after a first attempt via the ASG wizard appeared not to work, followed by manually creating a second one — both got attached to the same ASG. Resolved by identifying which one was actually serving traffic and deleting the duplicate (running two ALBs doubles the hourly cost).
+Root cause of persistent "Request timed out" health checks: the ALB itself had app-sg attached instead of alb-sg. Since app-sg's only inbound rule allows traffic specifically from alb-sg, the ALB couldn't properly receive public traffic or reach the EC2 instances for health checks. Fixed by swapping the ALB's security group to alb-sg, restoring the intended chain.
+The most significant bug: one EC2 instance kept failing health checks even after every security group was confirmed correct. Checking the instance's own Subnet ID revealed it had launched into a public subnet instead of the private app-tier subnet — the Auto Scaling Group's subnet configuration had a public subnet mixed in. With no public IP assigned, the instance had no usable internet route at all (a public subnet routes to the Internet Gateway, which requires a public IP to work — it does not fall back to the NAT Gateway), so its startup script silently failed to install the web server. Fixed by correcting the ASG's subnet configuration to use only the two private app-tier subnets, then terminating the misplaced instance so the ASG replaced it correctly.
+Cost
+Built and tested on a $20/month AWS Budgets alarm. Final running configuration (db.t3.micro Multi-AZ RDS, t2.micro EC2, single NAT Gateway, single ALB): ~$29–40/month if left running continuously. RDS and EC2 both bill hourly, so short-lived verification runs cost a small fraction of that.
+Author
+Ayomide Oladapo AWS Certified Cloud Practitioner · AWS re/Start Cohort 1 (IIH x IHS x AWS)
 
-A classic highly-available three-tier web architecture on AWS: a public
-load-balanced web tier, an auto-scaling application tier in private
-subnets, and a Multi-AZ managed database — each tier isolated from the
-others by network and security group design, not just by naming.
-
-## 🏗️ Architecture
-
-```
-                                Internet
-                                    │
-                                    ▼
-                          ┌──────────────────┐
-                          │  Internet Gateway  │
-                          └─────────┬──────────┘
-                                    │
-   VPC: 10.1.0.0/16                │
-  ┌──────────────────────────────────┴──────────────────────────────────┐
-  │                                                                      │
-  │   AZ-a                                    AZ-b                      │
-  │  ┌─────────────────────┐               ┌─────────────────────┐     │
-  │  │ Public Subnet         │               │ Public Subnet         │     │
-  │  │ 10.1.0.0/24            │               │ 10.1.1.0/24            │     │
-  │  │   [ALB node]  ◀────────┼───────────────┼──▶ [ALB node]         │     │
-  │  │   [NAT Gateway]        │               │                        │     │
-  │  └───────────┬─────────┘               └───────────┬─────────┘     │
-  │              │  Tier 1: Web/Routing                 │               │
-  │              ▼                                       ▼               │
-  │  ┌─────────────────────┐               ┌─────────────────────┐     │
-  │  │ App Subnet (private)  │               │ App Subnet (private)  │     │
-  │  │ 10.1.10.0/24           │               │ 10.1.11.0/24           │     │
-  │  │  [EC2 - ASG, PHP app]  │               │  [EC2 - ASG, PHP app]  │     │
-  │  └───────────┬─────────┘               └───────────┬─────────┘     │
-  │              │  Tier 2: Application                 │               │
-  │              ▼                                       ▼               │
-  │  ┌─────────────────────┐               ┌─────────────────────┐     │
-  │  │ DB Subnet (isolated)  │               │ DB Subnet (isolated)  │     │
-  │  │ 10.1.20.0/24           │               │ 10.1.21.0/24           │     │
-  │  │  [RDS MySQL - Primary] │◀── sync ────▶│  [RDS MySQL - Standby] │     │
-  │  └─────────────────────┘               └─────────────────────┘     │
-  │                                    Tier 3: Data (Multi-AZ)          │
-  └──────────────────────────────────────────────────────────────────────┘
-```
-
-## 🎯 Design Decisions
-
-| Decision | Reason |
-|---|---|
-| Fresh, standalone VPC (`10.1.0.0/16`) | Keeps this project fully independent of the [VPC networking lab](../02-vpc-networking-lab) — different CIDR range avoids any confusion if both are ever peered later |
-| 3 tiers × 2 AZs = 6 subnets | Every tier is HA-capable from day one — no single-AZ dependency anywhere |
-| DB subnets have **no route to the internet at all** | Not even via NAT — the data tier has zero outbound path, the strictest isolation of the three tiers |
-| No SSH / no bastion host | App instances are managed via **AWS Systems Manager Session Manager** instead — no open port 22 anywhere in this architecture, no key pairs to lose track of |
-| RDS-managed master password (Secrets Manager) | Enabled at RDS creation time — AWS rotates and stores the credential, the app fetches it at boot instead of it ever being hardcoded |
-| Security groups reference each other, not CIDRs | `sg-app` only accepts traffic from `sg-alb`'s ID; `sg-db` only accepts traffic from `sg-app`'s ID — same pattern as the VPC lab, extended across three tiers |
-| Single NAT Gateway | Cost-conscious choice for a portfolio project — only the app tier needs outbound (for package installs, SSM agent, Secrets Manager calls); documented trade-off same as the VPC lab |
-| Launch Template (not Launch Configuration) | Launch Configurations are the legacy, AWS no longer recommends them for new Auto Scaling Groups |
-
-## 🛠️ AWS Services Used
-
-- **Amazon VPC** — 6 subnets across 2 AZs (public / app / db)
-- **Internet Gateway + NAT Gateway** — public tier internet access, app tier outbound-only
-- **Application Load Balancer (ALB)** — public entry point, health checks, distributes to the ASG
-- **EC2 Auto Scaling Group + Launch Template** — application tier, scales on ALB request count
-- **Amazon RDS for MySQL (Multi-AZ)** — managed database with automatic failover
-- **AWS Secrets Manager** — RDS-managed master credential, fetched by the app at boot
-- **AWS Systems Manager (Session Manager)** — admin access to app instances, no SSH/bastion needed
-- **Security Groups** — three tiers, each scoped to only the tier in front of it
-- **IAM** — EC2 instance role scoped to exactly one secret + SSM + CloudWatch Logs
-- **CloudWatch** — ASG scaling alarms, ALB target health, RDS metrics
-
-## 📁 Repo Structure
-
-```
-aws-three-tier-web-app/
-├── README.md                        ← you are here
-├── docs/
-│   └── SETUP.md                     ← step-by-step console build guide
-├── configs/
-│   ├── cidr-plan.md                 ← subnet/CIDR reference table
-│   ├── security-groups.md           ← SG rules reference table
-│   └── route-tables.md              ← route table reference
-├── policies/
-│   └── ec2-instance-role-policy.json ← least-privilege IAM policy for app instances
-├── app/
-│   ├── index.php                    ← demo homepage (shows instance ID + DB connection status)
-│   └── config.php.template          ← DB config template (populated by user-data at boot)
-└── scripts/
-    ├── user-data.sh                 ← EC2 Launch Template bootstrap script
-    └── test-app.sh                  ← validates ALB routing + DB connectivity from outside
-```
-
-## 🚀 Quick Start
-
-1. Follow [`docs/SETUP.md`](docs/SETUP.md) — builds the VPC, all 6 subnets, IGW, NAT Gateway, route tables, security groups, RDS, the Launch Template + ASG, and the ALB, in order.
-2. Reference [`configs/cidr-plan.md`](configs/cidr-plan.md) and [`configs/security-groups.md`](configs/security-groups.md) while building so every value matches.
-3. Paste [`scripts/user-data.sh`](scripts/user-data.sh) into the Launch Template's user data field (after filling in the placeholders).
-4. Once the ALB is active and the ASG has healthy targets, run:
-   ```bash
-   chmod +x scripts/test-app.sh
-   ./scripts/test-app.sh
-   ```
-5. Visit the ALB's DNS name in a browser — you should see the demo homepage confirming a live DB connection.
-
-## ✅ What This Proves
-
-- Web tier (ALB) is the only internet-facing component
-- App tier is only reachable from the ALB, has no SSH exposure, and can still be administered via SSM
-- DB tier is reachable **only** from the app tier, has automatic Multi-AZ failover, and has no internet route whatsoever
-- Credentials are never hardcoded — fetched from Secrets Manager at instance boot
-
-## 💰 Cost Notes
-
-The most expensive pieces here are the **NAT Gateway** (hourly + per-GB) and
-**RDS Multi-AZ** (roughly double a single-AZ instance, since you're paying
-for the standby too). Both are the right call to demonstrate HA design, but
-**tear this down when you're done demoing** — see the teardown steps at the
-bottom of `docs/SETUP.md`.
-
-## 🔭 Next Steps (documented, not yet implemented)
-
-- HTTPS on the ALB via ACM (currently HTTP-only for simplicity)
-- Convert console steps to Terraform/CloudFormation for repeatable, version-controlled infra
-- Add the CI/CD pipeline from Project 5 to auto-deploy app changes
-- Add read replicas if read traffic grows beyond what the primary can handle
-
-## 👤 About
-
-Built by Ayomide Oladapo as a hands-on AWS portfolio project, applying
-HA web architecture, IAM least-privilege, and Multi-AZ database design
-learned through AWS Cloud Practitioner and the AWS re/Start program.
