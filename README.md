@@ -1,4 +1,4 @@
-AWS Three-Tier Web Application
+### AWS Three-Tier Web Application
 A production style three-tier-web-architecture built on AWS, designed for high availability and strict network isolation: no single point of failure, and no direct internet exposure for the application or database layers.
 Live test endpoint (via ALB): Threetierwebappalb-1043685500.us-east-1.elb.amazonaws.com
 Architecture
