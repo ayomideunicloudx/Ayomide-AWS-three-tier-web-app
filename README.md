@@ -85,5 +85,9 @@ Cost
 Built and tested on a $20/month AWS Budgets alarm. Final running configuration (db.t3.micro Multi-AZ RDS, t2.micro EC2, single NAT Gateway, single ALB): ~$29–40/month if left running continuously. RDS and EC2 both bill hourly, so short-lived verification runs cost a small fraction of that.
 ![RDS](SS-3-TIER/RDS-CONFIG.png)
 
+http://threetierwebappalb-1043685500.us-east-1.elb.amazonaws.com/
+
+![architecture](SS-3-TIER/AWSARCHI.png)
+
 Author - Ayomide Oladapo AWS Certified Cloud Practitioner ·
 
